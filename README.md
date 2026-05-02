@@ -63,6 +63,7 @@ Catalog:
 
 - `search(query, types=, limit=)` — types: `songs`, `albums`, `artists`, `music-videos`, `playlists`, `stations`
 - `catalog_song(id)`, `catalog_album(id)`, `catalog_artist(id)`, `catalog_playlist(id)`
+- `catalog_songs_by_isrc(isrcs)`, `catalog_albums_by_upc(upcs)` — batch lookup by industry-standard identifiers; useful when migrating libraries from another service that exposes ISRCs/UPCs (e.g. Spotify), since they're far more reliable than fuzzy text search
 
 Pagination is handled internally — the library reads return full lists, walking Apple's `next`-cursor chain transparently.
 

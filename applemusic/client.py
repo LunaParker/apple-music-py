@@ -308,6 +308,53 @@ class AppleMusic:
             raise AppleMusicError(f"Apple Music catalog has no {kind[:-1]} with id {item_id}")
         return data[0]
 
+    def catalog_songs_by_isrc(self, isrcs: list[str]) -> list[dict[str, Any]]:
+        """Look up catalog songs by ISRC.
+
+        ISRCs are the standard 12-character recording identifier most music
+        services (Spotify, Deezer, etc.) expose for each track, which makes
+        them by far the most reliable way to find an Apple Music catalog
+        match for a song known on another platform.
+
+        Returns the raw catalog song records — typically zero or one entry
+        per ISRC, but Apple may return multiple regional variants. Order is
+        not guaranteed to match the input order; callers that need to map
+        results back should key on each record's ``attributes.isrc``. Items
+        Apple has no record of are silently absent.
+        """
+        return self._catalog_by_filter("songs", "isrc", isrcs)
+
+    def catalog_albums_by_upc(self, upcs: list[str]) -> list[dict[str, Any]]:
+        """Look up catalog albums by UPC.
+
+        UPCs (a.k.a. EANs / barcodes) are the standard album-level identifier
+        Spotify and other services expose, making them the most reliable
+        Apple-catalog match for an album known on another platform.
+
+        Returns the raw catalog album records. As with ISRC lookups, expect
+        zero or one match per UPC in the typical case, occasional regional
+        duplicates, and silent absence for UPCs Apple has no record of.
+        """
+        return self._catalog_by_filter("albums", "upc", upcs)
+
+    def _catalog_by_filter(
+        self,
+        kind: str,
+        filter_name: str,
+        values: list[str],
+    ) -> list[dict[str, Any]]:
+        if not values:
+            raise ValueError(
+                f"catalog_{kind}_by_{filter_name} needs at least one identifier"
+            )
+        storefront = self._ensure_storefront()
+        params: dict[str, Any] = {
+            f"filter[{filter_name}]": ",".join(values),
+            "l": self._language,
+        }
+        envelope = self._get(f"/v1/catalog/{storefront}/{kind}", params)
+        return envelope.get("data") or []
+
     # ------------------------------------------------------- library mutations
 
     def playlist_create(

@@ -186,6 +186,93 @@ def test_catalog_artist_not_found_raises() -> None:
     assert "99999" in str(excinfo.value)
 
 
+def test_catalog_songs_by_isrc_packs_filter_param() -> None:
+    captured: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "data": [
+                    {"id": "1", "type": "songs", "attributes": {"isrc": "USRC11700001"}},
+                    {"id": "2", "type": "songs", "attributes": {"isrc": "USRC11700002"}},
+                ]
+            },
+        )
+
+    client = make_client(handler, storefront="us")
+    songs = client.catalog_songs_by_isrc(["USRC11700001", "USRC11700002"])
+
+    assert captured[0].method == "GET"
+    assert captured[0].url.path == "/v1/catalog/us/songs"
+    assert dict(captured[0].url.params)["filter[isrc]"] == "USRC11700001,USRC11700002"
+    assert [s["id"] for s in songs] == ["1", "2"]
+
+
+def test_catalog_songs_by_isrc_empty_match_returns_empty_list() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": []})
+
+    client = make_client(handler, storefront="us")
+    assert client.catalog_songs_by_isrc(["XXNON00000000"]) == []
+
+
+def test_catalog_songs_by_isrc_empty_input_raises() -> None:
+    client = make_client(lambda r: httpx.Response(500), storefront="us")
+    with pytest.raises(ValueError):
+        client.catalog_songs_by_isrc([])
+
+
+def test_catalog_albums_by_upc_packs_filter_param() -> None:
+    captured: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "data": [
+                    {"id": "100", "type": "albums", "attributes": {"upc": "060253766935"}},
+                ]
+            },
+        )
+
+    client = make_client(handler, storefront="us")
+    albums = client.catalog_albums_by_upc(["060253766935", "060253766942"])
+
+    assert captured[0].url.path == "/v1/catalog/us/albums"
+    assert dict(captured[0].url.params)["filter[upc]"] == "060253766935,060253766942"
+    assert [a["id"] for a in albums] == ["100"]
+
+
+def test_catalog_albums_by_upc_empty_input_raises() -> None:
+    client = make_client(lambda r: httpx.Response(500), storefront="us")
+    with pytest.raises(ValueError):
+        client.catalog_albums_by_upc([])
+
+
+def test_catalog_filter_resolves_storefront_when_unset() -> None:
+    captured: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        if request.url.path == "/v1/me/storefront":
+            return httpx.Response(
+                200,
+                json={"data": [{"id": "ca", "type": "storefronts"}]},
+            )
+        return httpx.Response(200, json={"data": []})
+
+    client = make_client(handler)
+    client.catalog_songs_by_isrc(["USRC11700001"])
+
+    assert [r.url.path for r in captured] == [
+        "/v1/me/storefront",
+        "/v1/catalog/ca/songs",
+    ]
+
+
 def test_library_playlist_fetches_single_envelope() -> None:
     captured: list[httpx.Request] = []
 

@@ -138,6 +138,44 @@ def test_catalog_album_round_trip(client: AppleMusic) -> None:
     assert "data" in tracks_rel
 
 
+def test_catalog_songs_by_isrc_round_trip(client: AppleMusic) -> None:
+    """Search a song, extract its ISRC, then re-fetch by ISRC and confirm we get it back."""
+    search = client.search("Bohemian Rhapsody Queen", types=["songs"], limit=1)
+    songs = search.get("songs", {}).get("data", [])
+    assert len(songs) > 0
+
+    isrc = songs[0]["attributes"].get("isrc")
+    assert isrc, "Catalog song record is missing an ISRC; can't round-trip"
+
+    matches = client.catalog_songs_by_isrc([isrc])
+    assert len(matches) > 0
+    assert all(m["type"] == "songs" for m in matches)
+    # At least one match's ISRC should equal the one we asked for.
+    assert any(m["attributes"].get("isrc") == isrc for m in matches)
+
+
+def test_catalog_albums_by_upc_round_trip(client: AppleMusic) -> None:
+    """Search an album, extract its UPC, then re-fetch by UPC and confirm we get it back."""
+    search = client.search("A Night at the Opera Queen", types=["albums"], limit=1)
+    albums = search.get("albums", {}).get("data", [])
+    assert len(albums) > 0
+
+    upc = albums[0]["attributes"].get("upc")
+    assert upc, "Catalog album record is missing a UPC; can't round-trip"
+
+    matches = client.catalog_albums_by_upc([upc])
+    assert len(matches) > 0
+    assert all(m["type"] == "albums" for m in matches)
+    assert any(m["attributes"].get("upc") == upc for m in matches)
+
+
+def test_catalog_songs_by_isrc_unknown_returns_empty(client: AppleMusic) -> None:
+    """Asking for an ISRC Apple has no record of returns an empty list, not an error."""
+    # Z-prefix is reserved/unassigned in the ISRC scheme, so this should never match.
+    matches = client.catalog_songs_by_isrc(["ZZZZZ9999999"])
+    assert matches == []
+
+
 # =========================================================================
 # Mutation lifecycle
 # =========================================================================
