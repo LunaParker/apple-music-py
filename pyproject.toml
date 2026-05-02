@@ -38,6 +38,9 @@ dev = [
 Homepage = "https://github.com/LunaParker/apple-music-py"
 Issues = "https://github.com/LunaParker/apple-music-py/issues"
 
+[project.scripts]
+applemusic = "applemusic.__main__:main"
+
 [tool.hatch.build.targets.wheel]
 packages = ["applemusic"]
 
