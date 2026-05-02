@@ -218,6 +218,38 @@ class AppleMusic:
         """Return the tracks in the given library playlist."""
         return list(self._library_iter(f"/v1/me/library/playlists/{playlist_id}/tracks"))
 
+    def library_song(self, song_id: str) -> dict[str, Any]:
+        """Return a single song from the user's library by its library-song ID."""
+        return self._library_one("songs", song_id)
+
+    def library_album(self, album_id: str) -> dict[str, Any]:
+        """Return a single album from the user's library by its library-album ID."""
+        return self._library_one("albums", album_id)
+
+    def library_artist(self, artist_id: str) -> dict[str, Any]:
+        """Return a single artist from the user's library by its library-artist ID."""
+        return self._library_one("artists", artist_id)
+
+    def library_playlist(self, playlist_id: str) -> dict[str, Any]:
+        """Return a single playlist from the user's library by its library-playlist ID.
+
+        Useful for verifying a just-created playlist exists:
+        ``current_user_playlists`` has eventual consistency on Apple's side, so
+        newly-created playlists may take several seconds to appear in the
+        listing, but a direct fetch by ID succeeds immediately.
+        """
+        return self._library_one("playlists", playlist_id)
+
+    def _library_one(self, kind: str, item_id: str) -> dict[str, Any]:
+        envelope = self._get(
+            f"/v1/me/library/{kind}/{item_id}",
+            {"l": self._language},
+        )
+        data = envelope.get("data") or []
+        if not data:
+            raise AppleMusicError(f"Library has no {kind[:-1]} with id {item_id}")
+        return data[0]
+
     # --------------------------------------------------------------- catalog
 
     def search(

@@ -186,6 +186,43 @@ def test_catalog_artist_not_found_raises() -> None:
     assert "99999" in str(excinfo.value)
 
 
+def test_library_playlist_fetches_single_envelope() -> None:
+    captured: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "data": [
+                    {
+                        "id": "p.X",
+                        "type": "library-playlists",
+                        "attributes": {"name": "My Playlist"},
+                    }
+                ]
+            },
+        )
+
+    client = make_client(handler, storefront="us")
+    playlist = client.library_playlist("p.X")
+
+    assert captured[0].method == "GET"
+    assert captured[0].url.path == "/v1/me/library/playlists/p.X"
+    assert playlist["id"] == "p.X"
+    assert playlist["attributes"]["name"] == "My Playlist"
+
+
+def test_library_song_not_found_raises() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"data": []})
+
+    client = make_client(handler, storefront="us")
+    with pytest.raises(AppleMusicError) as excinfo:
+        client.library_song("i.missing")
+    assert "i.missing" in str(excinfo.value)
+
+
 # =========================================================================
 # Library mutations
 # =========================================================================

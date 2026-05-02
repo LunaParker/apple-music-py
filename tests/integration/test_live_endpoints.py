@@ -144,15 +144,22 @@ def test_catalog_album_round_trip(client: AppleMusic) -> None:
 
 
 def test_playlist_create_and_delete(client: AppleMusic) -> None:
-    """Bare-minimum mutation cycle: create an empty playlist, then delete it."""
+    """Bare-minimum mutation cycle: create an empty playlist, then delete it.
+
+    Verification uses ``library_playlist(id)`` directly rather than scanning
+    ``current_user_playlists()``, because Apple's library listing endpoint is
+    eventually consistent — newly-created playlists may take several seconds
+    to appear in the list, but a direct fetch by ID succeeds immediately.
+    """
     playlist = client.playlist_create(f"{PLAYLIST_PREFIX} (create+delete)")
     playlist_id = playlist["id"]
     assert playlist_id
+    assert playlist["type"] in ("library-playlists", "playlists")
 
     try:
-        all_playlists = client.current_user_playlists()
-        ids = [p["id"] for p in all_playlists]
-        assert playlist_id in ids
+        fetched = client.library_playlist(playlist_id)
+        assert fetched["id"] == playlist_id
+        assert PLAYLIST_PREFIX in fetched["attributes"]["name"]
     finally:
         client.playlist_delete(playlist_id)
 
@@ -184,7 +191,7 @@ def test_playlist_lifecycle_with_tracks(client: AppleMusic) -> None:
 
 
 def test_playlist_rename_via_update(client: AppleMusic) -> None:
-    """Create → rename via playlist_update → verify → delete."""
+    """Create → rename via playlist_update → verify via direct fetch → delete."""
     initial = f"{PLAYLIST_PREFIX} (initial name)"
     renamed = f"{PLAYLIST_PREFIX} (renamed)"
 
@@ -194,12 +201,7 @@ def test_playlist_rename_via_update(client: AppleMusic) -> None:
     try:
         client.playlist_update(playlist_id, name=renamed)
 
-        all_playlists = client.current_user_playlists()
-        match = next(
-            (p for p in all_playlists if p["id"] == playlist_id),
-            None,
-        )
-        assert match is not None
-        assert match["attributes"]["name"] == renamed
+        fetched = client.library_playlist(playlist_id)
+        assert fetched["attributes"]["name"] == renamed
     finally:
         client.playlist_delete(playlist_id)

@@ -47,6 +47,7 @@ User library (read):
 - `current_user_storefront()`
 - `current_user_saved_tracks()`, `current_user_saved_albums()`, `current_user_saved_artists()`
 - `current_user_playlists()`, `playlist_tracks(playlist_id)`
+- `library_song(id)`, `library_album(id)`, `library_artist(id)`, `library_playlist(id)` — single-item fetches; useful for verifying a just-created playlist exists, since `current_user_playlists()` is eventually consistent on Apple's side
 
 User library (mutations):
 
