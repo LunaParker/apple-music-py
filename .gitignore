@@ -216,3 +216,8 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# applemusic example outputs
+/playlists.json
+/songs.json
+/song_metadata.json
