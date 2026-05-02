@@ -209,6 +209,140 @@ class AppleMusic:
             raise AppleMusicError(f"Apple Music catalog has no {kind[:-1]} with id {item_id}")
         return data[0]
 
+    # ------------------------------------------------------- library mutations
+
+    def playlist_create(
+        self,
+        name: str,
+        *,
+        description: str | None = None,
+        track_ids: list[str] | None = None,
+        track_kind: str = "songs",
+    ) -> dict[str, Any]:
+        """Create a new playlist in the user's library.
+
+        ``track_kind`` is the JSON:API ``type`` field for entries in
+        ``track_ids``: use ``"songs"`` for catalog tracks (the usual case)
+        or ``"library-songs"`` for tracks already saved in the library.
+        Returns the new playlist envelope (containing the assigned id).
+        """
+        attributes: dict[str, Any] = {"name": name}
+        if description is not None:
+            attributes["description"] = description
+
+        body: dict[str, Any] = {"attributes": attributes}
+        if track_ids:
+            body["relationships"] = {
+                "tracks": {
+                    "data": [{"id": tid, "type": track_kind} for tid in track_ids],
+                }
+            }
+
+        envelope = self._request("POST", "/v1/me/library/playlists", json=body).json()
+        data = envelope.get("data") or []
+        if not data:
+            raise AppleMusicError("Playlist create response had no `data` array")
+        return data[0]
+
+    def playlist_update(
+        self,
+        playlist_id: str,
+        *,
+        name: str | None = None,
+        description: str | None = None,
+    ) -> dict[str, Any]:
+        """Rename or re-describe an existing library playlist.
+
+        Returns the updated playlist envelope, or an empty dict if the API
+        responds 204 No Content (some Apple endpoints do).
+        """
+        attributes: dict[str, Any] = {}
+        if name is not None:
+            attributes["name"] = name
+        if description is not None:
+            attributes["description"] = description
+        if not attributes:
+            raise ValueError("playlist_update needs at least one of `name=` or `description=`")
+
+        body = {"attributes": attributes}
+        response = self._request(
+            "PATCH",
+            f"/v1/me/library/playlists/{playlist_id}",
+            json=body,
+        )
+        if response.status_code == 204 or not response.content:
+            return {}
+        envelope = response.json()
+        data = envelope.get("data") or []
+        return data[0] if data else {}
+
+    def playlist_delete(self, playlist_id: str) -> None:
+        """Delete a playlist from the user's library."""
+        self._request("DELETE", f"/v1/me/library/playlists/{playlist_id}")
+
+    def playlist_add_tracks(
+        self,
+        playlist_id: str,
+        track_ids: list[str],
+        *,
+        track_kind: str = "songs",
+    ) -> None:
+        """Append tracks to an existing library playlist.
+
+        ``track_kind`` is the JSON:API ``type`` field — see
+        :meth:`playlist_create` for guidance on which value to pass.
+        """
+        if not track_ids:
+            raise ValueError("playlist_add_tracks needs at least one track id")
+        body = {"data": [{"id": tid, "type": track_kind} for tid in track_ids]}
+        self._request(
+            "POST",
+            f"/v1/me/library/playlists/{playlist_id}/tracks",
+            json=body,
+        )
+
+    def playlist_remove_track(self, playlist_id: str, track_id: str) -> None:
+        """Remove a single track from a library playlist by its library-song ID."""
+        self._request(
+            "DELETE",
+            f"/v1/me/library/playlists/{playlist_id}/tracks/{track_id}",
+        )
+
+    def library_add(
+        self,
+        *,
+        songs: list[str] | None = None,
+        albums: list[str] | None = None,
+        artists: list[str] | None = None,
+        music_videos: list[str] | None = None,
+    ) -> None:
+        """Add catalog items to the user's library.
+
+        Pass any combination of ID lists; at least one kind must be supplied.
+        Catalog IDs (not library IDs) are expected — Apple converts them on
+        ingest.
+        """
+        params: dict[str, Any] = {}
+        if songs:
+            params["ids[songs]"] = ",".join(songs)
+        if albums:
+            params["ids[albums]"] = ",".join(albums)
+        if artists:
+            params["ids[artists]"] = ",".join(artists)
+        if music_videos:
+            params["ids[music-videos]"] = ",".join(music_videos)
+        if not params:
+            raise ValueError("library_add needs at least one non-empty kind")
+        self._request("POST", "/v1/me/library", params=params)
+
+    def library_remove_song(self, song_id: str) -> None:
+        """Remove a song from the user's library by its library-song ID."""
+        self._request("DELETE", f"/v1/me/library/songs/{song_id}")
+
+    def library_remove_album(self, album_id: str) -> None:
+        """Remove an album from the user's library by its library-album ID."""
+        self._request("DELETE", f"/v1/me/library/albums/{album_id}")
+
 
 def _extract_storefront_id(envelope: dict[str, Any]) -> str:
     data = envelope.get("data") or []

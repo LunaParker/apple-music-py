@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 
 import httpx
@@ -37,6 +38,11 @@ def make_client(
         headers=client._build_headers(),
     )
     return client
+
+
+# =========================================================================
+# Read side
+# =========================================================================
 
 
 def test_request_headers_include_credentials() -> None:
@@ -174,3 +180,197 @@ def test_catalog_artist_not_found_raises() -> None:
     with pytest.raises(AppleMusicError) as excinfo:
         client.catalog_artist("99999")
     assert "99999" in str(excinfo.value)
+
+
+# =========================================================================
+# Library mutations
+# =========================================================================
+
+
+def test_playlist_create_with_description_and_tracks() -> None:
+    captured: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(
+            201,
+            json={
+                "data": [
+                    {
+                        "id": "p.YYY",
+                        "type": "library-playlists",
+                        "attributes": {"name": "Test"},
+                    }
+                ]
+            },
+        )
+
+    client = make_client(handler, storefront="us")
+    result = client.playlist_create(
+        "Test",
+        description="Test description",
+        track_ids=["1234567890", "9876543210"],
+    )
+
+    assert captured[0].method == "POST"
+    assert captured[0].url.path == "/v1/me/library/playlists"
+    body = json.loads(captured[0].content)
+    assert body["attributes"]["name"] == "Test"
+    assert body["attributes"]["description"] == "Test description"
+    assert body["relationships"]["tracks"]["data"] == [
+        {"id": "1234567890", "type": "songs"},
+        {"id": "9876543210", "type": "songs"},
+    ]
+    assert result["id"] == "p.YYY"
+
+
+def test_playlist_create_minimal_omits_relationships() -> None:
+    captured: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(
+            201,
+            json={"data": [{"id": "p.X", "type": "library-playlists"}]},
+        )
+
+    client = make_client(handler, storefront="us")
+    client.playlist_create("Just a name")
+
+    body = json.loads(captured[0].content)
+    assert body == {"attributes": {"name": "Just a name"}}
+
+
+def test_playlist_update_sends_attributes_only() -> None:
+    captured: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(
+            200,
+            json={"data": [{"id": "p.ABC", "attributes": {"name": "Renamed"}}]},
+        )
+
+    client = make_client(handler, storefront="us")
+    result = client.playlist_update("p.ABC", name="Renamed")
+
+    assert captured[0].method == "PATCH"
+    assert captured[0].url.path == "/v1/me/library/playlists/p.ABC"
+    body = json.loads(captured[0].content)
+    assert body == {"attributes": {"name": "Renamed"}}
+    assert result["id"] == "p.ABC"
+
+
+def test_playlist_update_handles_204_no_content() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(204)
+
+    client = make_client(handler, storefront="us")
+    result = client.playlist_update("p.ABC", description="Updated")
+    assert result == {}
+
+
+def test_playlist_update_with_no_changes_raises() -> None:
+    client = make_client(lambda r: httpx.Response(500), storefront="us")
+    with pytest.raises(ValueError):
+        client.playlist_update("p.X")
+
+
+def test_playlist_delete() -> None:
+    captured: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(204)
+
+    client = make_client(handler, storefront="us")
+    client.playlist_delete("p.ABC123")
+
+    assert captured[0].method == "DELETE"
+    assert captured[0].url.path == "/v1/me/library/playlists/p.ABC123"
+
+
+def test_playlist_add_tracks_uses_specified_kind() -> None:
+    captured: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(204)
+
+    client = make_client(handler, storefront="us")
+    client.playlist_add_tracks(
+        "p.ABC",
+        ["i.aaa", "i.bbb"],
+        track_kind="library-songs",
+    )
+
+    assert captured[0].method == "POST"
+    assert captured[0].url.path == "/v1/me/library/playlists/p.ABC/tracks"
+    body = json.loads(captured[0].content)
+    assert body == {
+        "data": [
+            {"id": "i.aaa", "type": "library-songs"},
+            {"id": "i.bbb", "type": "library-songs"},
+        ]
+    }
+
+
+def test_playlist_add_tracks_empty_raises() -> None:
+    client = make_client(lambda r: httpx.Response(500), storefront="us")
+    with pytest.raises(ValueError):
+        client.playlist_add_tracks("p.ABC", [])
+
+
+def test_playlist_remove_track() -> None:
+    captured: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(204)
+
+    client = make_client(handler, storefront="us")
+    client.playlist_remove_track("p.ABC", "i.xyz")
+
+    assert captured[0].method == "DELETE"
+    assert captured[0].url.path == "/v1/me/library/playlists/p.ABC/tracks/i.xyz"
+
+
+def test_library_add_packs_ids_per_kind() -> None:
+    captured: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(202)
+
+    client = make_client(handler, storefront="us")
+    client.library_add(songs=["1", "2"], albums=["3"], music_videos=["4"])
+
+    assert captured[0].method == "POST"
+    assert captured[0].url.path == "/v1/me/library"
+    params = dict(captured[0].url.params)
+    assert params["ids[songs]"] == "1,2"
+    assert params["ids[albums]"] == "3"
+    assert params["ids[music-videos]"] == "4"
+
+
+def test_library_add_with_nothing_raises() -> None:
+    client = make_client(lambda r: httpx.Response(500), storefront="us")
+    with pytest.raises(ValueError):
+        client.library_add()
+
+
+def test_library_remove_song_and_album() -> None:
+    captured: list[httpx.Request] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.append(request)
+        return httpx.Response(204)
+
+    client = make_client(handler, storefront="us")
+    client.library_remove_song("i.song")
+    client.library_remove_album("l.album")
+
+    assert captured[0].method == "DELETE"
+    assert captured[0].url.path == "/v1/me/library/songs/i.song"
+    assert captured[1].method == "DELETE"
+    assert captured[1].url.path == "/v1/me/library/albums/l.album"
