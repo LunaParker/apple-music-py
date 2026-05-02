@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
+from typing import Any
 
 import httpx
 import pytest
@@ -20,17 +21,20 @@ def make_client(
     handler: Callable[[httpx.Request], httpx.Response],
     *,
     storefront: str | None = None,
+    **client_kwargs: Any,
 ) -> AppleMusic:
     """Build an AppleMusic whose HTTP transport is the given handler.
 
     Lets each test stub out responses without ever touching the network.
+    Extra ``client_kwargs`` (e.g. ``max_retries=0``) are forwarded to
+    ``AppleMusic.__init__``.
     """
     creds = AppleMusicCredentials(
         developer_token="fake.developer.jwt",
         media_user_token="fake-media-user-token",
         cookie_header="myacinfo=fake; media-user-token=fake-media-user-token",
     )
-    client = AppleMusic(creds, storefront=storefront)
+    client = AppleMusic(creds, storefront=storefront, **client_kwargs)
     client._http.close()
     client._http = httpx.Client(
         base_url="https://amp-api.music.apple.com",
@@ -374,3 +378,166 @@ def test_library_remove_song_and_album() -> None:
     assert captured[0].url.path == "/v1/me/library/songs/i.song"
     assert captured[1].method == "DELETE"
     assert captured[1].url.path == "/v1/me/library/albums/l.album"
+
+
+# =========================================================================
+# Retry / backoff
+# =========================================================================
+
+
+def test_no_retry_on_2xx() -> None:
+    call_count = [0]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        call_count[0] += 1
+        return httpx.Response(200, json={"data": [{"id": "ok"}]})
+
+    client = make_client(handler, storefront="us")
+    client.search("queen")
+
+    assert call_count[0] == 1
+
+
+def test_retries_on_429_honours_retry_after(monkeypatch) -> None:
+    sleeps: list[float] = []
+    monkeypatch.setattr("applemusic.client.time.sleep", lambda s: sleeps.append(s))
+
+    call_count = [0]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        call_count[0] += 1
+        if call_count[0] == 1:
+            return httpx.Response(429, headers={"Retry-After": "2"})
+        return httpx.Response(200, json={"results": {}})
+
+    client = make_client(handler, storefront="us")
+    client.search("queen")
+
+    assert call_count[0] == 2
+    assert sleeps == [2.0]
+
+
+def test_retries_on_500_with_exponential_backoff(monkeypatch) -> None:
+    sleeps: list[float] = []
+    monkeypatch.setattr("applemusic.client.time.sleep", lambda s: sleeps.append(s))
+    # Pin random.uniform to its upper bound so backoff numbers are deterministic.
+    monkeypatch.setattr("applemusic.client.random.uniform", lambda lo, hi: hi)
+
+    statuses = [500, 502, 200]
+    call_count = [0]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        call_count[0] += 1
+        status = statuses.pop(0)
+        if status == 200:
+            return httpx.Response(200, json={"results": {}})
+        return httpx.Response(status)
+
+    client = make_client(handler, storefront="us", retry_backoff=1.0)
+    client.search("queen")
+
+    # Two retries → two sleeps with exponential backoff:
+    #   attempt 0: 1.0 * 2^0 = 1.0
+    #   attempt 1: 1.0 * 2^1 = 2.0
+    assert sleeps == [1.0, 2.0]
+    assert call_count[0] == 3
+
+
+def test_retries_on_connect_error_then_succeeds(monkeypatch) -> None:
+    monkeypatch.setattr("applemusic.client.time.sleep", lambda s: None)
+
+    call_count = [0]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        call_count[0] += 1
+        if call_count[0] == 1:
+            raise httpx.ConnectError("simulated network blip")
+        return httpx.Response(200, json={"results": {}})
+
+    client = make_client(handler, storefront="us")
+    client.search("queen")
+
+    assert call_count[0] == 2
+
+
+def test_does_not_retry_on_403() -> None:
+    call_count = [0]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        call_count[0] += 1
+        return httpx.Response(403, text="forbidden")
+
+    client = make_client(handler, storefront="us")
+    with pytest.raises(AppleMusicHTTPError):
+        client.search("queen")
+
+    assert call_count[0] == 1
+
+
+def test_exhausts_retries_then_raises_with_final_status(monkeypatch) -> None:
+    monkeypatch.setattr("applemusic.client.time.sleep", lambda s: None)
+
+    call_count = [0]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        call_count[0] += 1
+        return httpx.Response(503, text="overloaded")
+
+    client = make_client(handler, storefront="us", max_retries=3)
+    with pytest.raises(AppleMusicHTTPError) as excinfo:
+        client.search("queen")
+
+    assert call_count[0] == 4  # 1 initial + 3 retries
+    assert excinfo.value.status_code == 503
+    assert "overloaded" in (excinfo.value.response_body or "")
+
+
+def test_max_retries_zero_means_one_attempt() -> None:
+    call_count = [0]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        call_count[0] += 1
+        return httpx.Response(503)
+
+    client = make_client(handler, storefront="us", max_retries=0)
+    with pytest.raises(AppleMusicHTTPError) as excinfo:
+        client.search("queen")
+
+    assert call_count[0] == 1
+    assert excinfo.value.status_code == 503
+
+
+def test_retry_after_clamped_to_backoff_max(monkeypatch) -> None:
+    """A huge Retry-After (e.g. 600s) must be capped at retry_backoff_max."""
+    sleeps: list[float] = []
+    monkeypatch.setattr("applemusic.client.time.sleep", lambda s: sleeps.append(s))
+
+    call_count = [0]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        call_count[0] += 1
+        if call_count[0] == 1:
+            return httpx.Response(429, headers={"Retry-After": "600"})
+        return httpx.Response(200, json={"results": {}})
+
+    client = make_client(handler, storefront="us", retry_backoff_max=10.0)
+    client.search("queen")
+
+    assert sleeps == [10.0]
+
+
+def test_network_error_exhausts_retries(monkeypatch) -> None:
+    monkeypatch.setattr("applemusic.client.time.sleep", lambda s: None)
+
+    call_count = [0]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        call_count[0] += 1
+        raise httpx.ConnectError("never works")
+
+    client = make_client(handler, storefront="us", max_retries=2)
+    with pytest.raises(AppleMusicHTTPError) as excinfo:
+        client.search("queen")
+
+    assert call_count[0] == 3  # 1 initial + 2 retries
+    assert "never works" in str(excinfo.value)

@@ -8,6 +8,8 @@ internally so callers get the full list back without having to follow
 
 from __future__ import annotations
 
+import random
+import time
 from collections.abc import Iterator
 from types import TracebackType
 from typing import Any
@@ -17,6 +19,8 @@ import httpx
 from applemusic.auth import AMP_API_BASE, AppleMusicCredentials
 from applemusic.exceptions import AppleMusicError, AppleMusicHTTPError
 from applemusic.pagination import paginate
+
+RETRYABLE_STATUS = frozenset({429, 500, 502, 503, 504})
 
 
 class AppleMusic:
@@ -43,10 +47,16 @@ class AppleMusic:
         storefront: str | None = None,
         language: str = "en-US",
         timeout: float = 30.0,
+        max_retries: int = 3,
+        retry_backoff: float = 1.0,
+        retry_backoff_max: float = 30.0,
     ) -> None:
         self._credentials = credentials
         self._language = language
         self._storefront = storefront
+        self._max_retries = max_retries
+        self._retry_backoff = retry_backoff
+        self._retry_backoff_max = retry_backoff_max
         self._http = httpx.Client(
             base_url=AMP_API_BASE,
             timeout=timeout,
@@ -89,14 +99,71 @@ class AppleMusic:
         params: dict[str, Any] | None = None,
         json: dict[str, Any] | None = None,
     ) -> httpx.Response:
-        response = self._http.request(method, path, params=params, json=json)
-        if response.status_code >= 400:
-            raise AppleMusicHTTPError(
-                f"{method} {path} returned HTTP {response.status_code}",
-                status_code=response.status_code,
-                response_body=response.text,
-            )
-        return response
+        last_network_error: Exception | None = None
+
+        for attempt in range(self._max_retries + 1):
+            try:
+                response = self._http.request(
+                    method, path, params=params, json=json
+                )
+            except (
+                httpx.TimeoutException,
+                httpx.NetworkError,
+                httpx.RemoteProtocolError,
+            ) as e:
+                last_network_error = e
+                if attempt < self._max_retries:
+                    time.sleep(self._retry_delay(attempt))
+                    continue
+                raise AppleMusicHTTPError(
+                    f"{method} {path} failed after {attempt + 1} attempts: {e}",
+                    status_code=0,
+                    response_body=None,
+                ) from e
+
+            if (
+                response.status_code in RETRYABLE_STATUS
+                and attempt < self._max_retries
+            ):
+                time.sleep(self._delay_for_response(response, attempt))
+                continue
+
+            if response.status_code >= 400:
+                raise AppleMusicHTTPError(
+                    f"{method} {path} returned HTTP {response.status_code}",
+                    status_code=response.status_code,
+                    response_body=response.text,
+                )
+            return response
+
+        # Defensive — every loop branch above either continues or returns/raises.
+        raise AppleMusicHTTPError(
+            f"{method} {path} exhausted retries unexpectedly",
+            status_code=0,
+            response_body=str(last_network_error) if last_network_error else None,
+        )
+
+    def _retry_delay(self, attempt: int) -> float:
+        """Exponential backoff with full jitter, capped at ``retry_backoff_max``."""
+        ceiling = min(
+            self._retry_backoff * (2**attempt),
+            self._retry_backoff_max,
+        )
+        return random.uniform(0.0, ceiling)
+
+    def _delay_for_response(self, response: httpx.Response, attempt: int) -> float:
+        """Honour ``Retry-After`` on a retryable response; fall back to backoff."""
+        retry_after = response.headers.get("Retry-After", "").strip()
+        if retry_after:
+            try:
+                seconds = float(retry_after)
+            except ValueError:
+                # HTTP-date format — Apple amp-api uses integer seconds, so this
+                # is rare; fall through to exponential backoff.
+                pass
+            else:
+                return min(max(seconds, 0.0), self._retry_backoff_max)
+        return self._retry_delay(attempt)
 
     def _get(
         self,
