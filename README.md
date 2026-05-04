@@ -16,6 +16,7 @@
   - [Looking up Apple Music tracks by ISRC](#looking-up-apple-music-tracks-by-isrc)
   - [Creating a playlist and adding tracks](#creating-a-playlist-and-adding-tracks)
   - [Saving songs to the library](#saving-songs-to-the-library)
+- [Configuration](#configuration)
 - [Testing](#testing)
 - [Licence](#licence)
 
@@ -180,6 +181,26 @@ with AppleMusic(credentials) as client:
 with AppleMusic(credentials) as client:
     client.library_add(songs=["1440806041", "1440806042"])
 ```
+
+## Configuration
+
+Both `AppleMusic` and `AppleMusicAuth` are usable with no arguments beyond the credentials, but every behaviour the library applies on the user's behalf — the storefront it queries, the retry budget, where credentials live on disk — is exposed as a keyword argument on the relevant constructor.
+
+### `AppleMusic(credentials, ...)`
+
+- `storefront=None` — Apple Music storefront identifier (e.g. `"us"`, `"ca"`, `"gb"`). When left as `None`, the client looks the value up via `/v1/me/storefront` on the first catalog call and caches the result for the lifetime of the instance; pass it explicitly to skip that round-trip.
+- `language="en-US"` — sent on every request as the `Accept-Language` header and as the `l=` query parameter; controls localised attributes such as artist names and editorial notes.
+- `timeout=30.0` — per-request timeout in seconds, forwarded to the underlying `httpx.Client`.
+- `max_retries=3` — number of retries on top of the initial attempt for transient failures (HTTP 429 / 500 / 502 / 503 / 504, plus network-layer errors). Set to `0` to disable retries entirely.
+- `retry_backoff=1.0` — base for the exponential backoff used between retries. Each retry sleeps for a random value between 0 and `retry_backoff * 2 ** attempt` seconds (full-jitter).
+- `retry_backoff_max=30.0` — upper bound on any single retry sleep, applied both to the exponential schedule above and to the `Retry-After` header honoured on 429 responses.
+
+### `AppleMusicAuth(...)`
+
+- `session_dir=~/.cache/applemusic` — directory used for the cached credentials JSON, the persistent Chromium profile, and the Playwright storage state. Override it to share a session between accounts or to keep credentials under a project-local directory.
+- `headless=False` — passing `True` launches Chromium without a window. **Sign-in won't actually complete in headless mode** (Apple's flow needs visible interaction, including 2FA), so this is only useful for re-validating an already-signed-in profile in CI-like environments.
+- `wait_for_enter=True` — when `True`, the auth flow accepts a stdin "press Enter when done" signal in addition to auto-detecting the captured `Bearer` header. Set to `False` in fully non-interactive contexts where stdin isn't available.
+- `auth_timeout=600.0` — seconds to wait for sign-in completion before raising `AppleMusicAuthError`. The default of ten minutes is generous on purpose; Apple's 2FA prompts can stall for a while.
 
 ## Testing
 
