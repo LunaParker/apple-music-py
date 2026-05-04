@@ -9,7 +9,7 @@ description = "Unofficial Python client for the Apple Music web API, with Playwr
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
-license-files = ["LICENSE"]
+license-files = ["LICENSE.md"]
 authors = [{ name = "Luna Parker" }]
 keywords = ["apple-music", "music", "api", "playwright", "spotipy"]
 classifiers = [
