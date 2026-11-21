@@ -22,11 +22,11 @@
 
 ## Overview
 
-`apple-music-py` is an unofficial Python client for Apple Music's web API. It exposes a [Spotipy](https://github.com/spotipy-dev/spotipy)-shaped surface (`current_user_playlists()`, `playlist_create(...)`, `search(...)`, `catalog_song(id)`, and so on) for reading and modifying the signed-in user's own library and searching the public Apple Music catalog. Authentication runs through Playwright: on first run, a Chromium window opens and the user signs in to Apple normally (2FA included); the library then captures the developer JWT, `media-user-token`, and session cookies that music.apple.com itself uses, and subsequent runs re-use the cached session unless Apple has expired it. Pagination, retries with `Retry-After` honour, and exponential backoff are handled internally, so callers get full lists back from library reads without having to walk Apple's `next`-cursor chain themselves.
+`apple-music-py` is an unofficial Python client for Apple Music's web API. It exposes a [Spotipy](https://github.com/spotipy-dev/spotipy)-shaped surface (`current_user_playlists()`, `playlist_create(...)`, `search(...)`, `catalog_song(id)`, and so on) for reading and modifying the signed-in user's own library and searching the public Apple Music catalog. Authentication runs through Playwright: on first run, a Chromium window opens and the user signs in to Apple normally (2FA included), and the library captures the developer JWT, `media-user-token`, and session cookies from that session.
 
 ## Why this exists
 
-Apple's official MusicKit JS pipeline requires an **Apple Developer Program** membership at **USD $99/year** to obtain the developer-signed JWT that authorises catalog access, plus a separate **Music User Token** captured through a bespoke MusicKit JS sign-in flow on a website the developer has to host themselves. That is the *only* officially-blessed way to read or modify a user's own Apple Music library from outside the iOS / macOS apps, and for end-user scripts that just want to back up a library, mirror playlists from another service, or write a quick personal automation, the friction (and the recurring fee) is hard to justify.
+Apple's official MusicKit JS pipeline requires an Apple Developer Program membership (USD $99/year) to obtain the developer-signed JWT that authorises catalog access, plus a separate Music User Token captured through a bespoke MusicKit JS sign-in flow on a website the developer has to host themselves. Apple offers no other way to read or modify a user's own Apple Music library from outside the iOS / macOS apps, and for end-user scripts that just want to back up a library, mirror playlists from another service, or write a quick personal automation, the friction (and the recurring fee) is hard to justify.
 
 [Spotipy](https://github.com/spotipy-dev/spotipy), the inspiration for this project, doesn't have to deal with any of that: Spotify's developer dashboard is free, anyone with a Spotify account can register a personal app in five minutes, and the resulting OAuth flow is fully documented and supported by Spotify itself. Apple has taken a stricter view, so `apple-music-py` instead targets `amp-api.music.apple.com` directly (the exact endpoints that the music.apple.com web client uses), with credentials scraped from a real signed-in browser session via Playwright. The trade-off is that undocumented endpoints can change without notice; in practice, the shape of `amp-api` has been stable for years, but there are no guarantees.
 
@@ -54,8 +54,8 @@ Apple's official MusicKit JS pipeline requires an **Apple Developer Program** me
 
 - `search(query, types=, limit=)`: `types` accepts `songs`, `albums`, `artists`, `music-videos`, `playlists`, `stations`.
 - `catalog_song(id)` / `catalog_album(id)` / `catalog_artist(id)` / `catalog_playlist(id)`: direct fetches by Apple Music catalog ID.
-- `catalog_songs_by_isrc(isrcs)`: batch lookup by **ISRC**, the 12-character recording identifier that almost every other music service exposes; far more reliable than fuzzy text search when migrating libraries between platforms.
-- `catalog_albums_by_upc(upcs)`: batch lookup by **UPC** (album-level barcode); the album-level analogue of the ISRC lookup.
+- `catalog_songs_by_isrc(isrcs)`: batch lookup by ISRC, the recording identifier that almost every other music service exposes.
+- `catalog_albums_by_upc(upcs)`: the same lookup for albums, by UPC barcode.
 
 Pagination is handled internally: every library-read method walks Apple's `next`-cursor chain transparently and returns the full list. Retries with exponential backoff and `Retry-After` honour are built into the HTTP layer, so callers don't need to wrap their own retry loop around Apple's occasional 429s.
 
@@ -71,7 +71,7 @@ playwright install chromium
 The first call to `auth.authenticate()` (or the `applemusic auth` CLI described below) opens a Chromium window and waits for the user to finish signing in, including any 2FA challenges Apple decides to throw up. On every subsequent run, the cached credentials at `~/.cache/applemusic/credentials.json` are restored and the browser only re-opens if the session has actually expired.
 
 > [!IMPORTANT]
-> **Cookies and tokens never leave the user's local machine.** The captured developer JWT, `media-user-token`, and session cookie jar are written to `~/.cache/applemusic/credentials.json` (mode `0600` on POSIX) and read straight back from disk on subsequent runs. The library has no telemetry, no upstream callbacks, and no servers of its own: every HTTP request goes directly from the user's process to `amp-api.music.apple.com`, the same endpoint that music.apple.com itself uses.
+> **Cookies and tokens never leave the user's local machine.** The captured developer JWT, `media-user-token`, and session cookie jar are written to `~/.cache/applemusic/credentials.json` (mode `0600` on POSIX) and read straight back from disk on subsequent runs. The library has no telemetry, no upstream callbacks, and no servers of its own: every HTTP request goes directly from the user's process to `amp-api.music.apple.com`.
 
 To authenticate from the command line without writing any Python (useful before running scripts, or as a once-per-six-months refresh when Apple rotates the developer JWT):
 
@@ -85,7 +85,7 @@ applemusic auth --force
 
 ## Examples
 
-Each example below assumes that `auth.authenticate()` has been run at least once already (either via the CLI above or via an earlier Python invocation). On subsequent runs, `auth.authenticate()` returns instantly from the cache without re-opening the browser. A self-contained "sign in then dump the library to JSON" script also lives at [`examples/login_and_dump.py`](examples/login_and_dump.py).
+Each example below assumes that `auth.authenticate()` has been run at least once already (either via the CLI above or via an earlier Python invocation). A self-contained "sign in then dump the library to JSON" script also lives at [`examples/login_and_dump.py`](examples/login_and_dump.py).
 
 ### Authenticating and listing the user's playlists
 
@@ -113,7 +113,7 @@ p.EkjJDdltq2pQ	Gym 2026
 
 ### Fetching every song in a specific playlist
 
-Combine `current_user_playlists()` with `playlist_tracks(playlist_id)` to walk every track in a given playlist. Pagination is handled internally, so the returned list is the full thing, with no `next`-cursor walking required, even for very large playlists.
+Combine `current_user_playlists()` with `playlist_tracks(playlist_id)` to list every track in a playlist, however large.
 
 ```python
 playlist_id = "p.LV0p2VAUxvBR"
@@ -143,7 +143,7 @@ with AppleMusic(credentials) as client:
 
 ### Looking up Apple Music tracks by ISRC
 
-When migrating a library from another service (Spotify, Deezer, Tidal, or anything else that exposes ISRCs), looking matches up by the 12-character **ISRC** is far more reliable than fuzzy text search: the ISRC uniquely identifies a specific recording, so there's no ambiguity between studio versions, live versions, remasters, and so on.
+When migrating a library from another service (Spotify, Deezer, Tidal, or anything else that exposes ISRCs), looking matches up by the 12-character ISRC is far more reliable than fuzzy text search: the ISRC uniquely identifies a specific recording, so there's no ambiguity between studio versions, live versions, remasters, and so on.
 
 ```python
 with AppleMusic(credentials) as client:
